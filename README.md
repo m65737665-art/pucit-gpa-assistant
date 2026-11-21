@@ -255,7 +255,7 @@ The recovery mechanism was tested using both synthetic and real interrupted conv
 ### 1. Clone the Repository
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
+git clone <https://github.com/m65737665-art/pucit-gpa-assistant>
 cd assignment01
 ```
 
