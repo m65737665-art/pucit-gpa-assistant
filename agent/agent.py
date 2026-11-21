@@ -1,12 +1,16 @@
 from llm import llm
 
 from langchain.agents import create_agent
-from langchain.messages import HumanMessage
+
+from langchain.messages import HumanMessage, ToolMessage
 
 import asyncio
 import os
 
 from dotenv import load_dotenv
+from langchain.mcp import MCPAdapter
+
+from fastmcp import Client
 from langchain.mcp import MCPAdapter
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -118,6 +122,77 @@ async def show_history(app, config):
             for call in message.tool_calls:
                 print(f"\nAgent requested tool: {call['name']}")
 
+
+
+
+async def recover_interrupted_tool_calls(app, config):
+
+    # Get the saved conversation
+    state = await app.aget_state(config)
+
+    messages = state.values.get("messages", [])
+
+    if not messages:
+        return
+
+    # Store tool call IDs that have received results
+    completed_tool_calls = set()
+
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            completed_tool_calls.add(message.tool_call_id)
+
+    # Find AI tool calls that never received a result
+    recovery_messages = []
+
+    for message in messages:
+
+        if message.type == "ai":
+
+            for call in getattr(message, "tool_calls", []):
+
+                call_id = call.get("id")
+
+                if call_id and call_id not in completed_tool_calls:
+
+                    print(
+                        f"\n[Recovery] Found interrupted tool call: "
+                        f"{call['name']}"
+                    )
+
+                    recovery_messages.append(
+                        ToolMessage(
+                            content=(
+                                "This tool call was interrupted because "
+                                "the MCP server or network connection failed. "
+                                "The result is unavailable. Please retry "
+                                "the operation if appropriate."
+                            ),
+                            tool_call_id=call_id,
+                            name=call["name"],
+                            status="error"
+                        )
+                    )
+
+                    completed_tool_calls.add(call_id)
+
+    # Save the repair to SQLite through LangGraph
+    if recovery_messages:
+
+        await app.aupdate_state(
+            config,
+            {"messages": recovery_messages}
+        )
+
+        print(
+            f"[Recovery] Repaired {len(recovery_messages)} "
+            "interrupted tool call(s)."
+        )
+
+    else:
+        print("[Recovery] No interrupted tool calls found.")
+
+
 async def main():
 
     if not MCP_URL:
@@ -126,7 +201,9 @@ async def main():
 
     async with AsyncSqliteSaver.from_conn_string("checkpoints.sqlite") as memory:
 
-        async with MCPAdapter(MCP_URL) as adapter:
+        client = Client(MCP_URL, auth="oauth")
+        
+        async with MCPAdapter(client) as adapter:
 
             tools = await adapter.list_tools()
 
@@ -200,6 +277,9 @@ async def main():
                         "thread_id": current_name
                     }
                 }
+
+                # Recover interrupted tool calls
+                await recover_interrupted_tool_calls(app, config)
 
                 try:
                     print("\nAgent: ", end="", flush=True)
